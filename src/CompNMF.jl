@@ -1,6 +1,6 @@
 module CompNMF
 
-using LinearAlgebra, NMF, ISVD, RandomizedLinAlg, DataStructures, StatsBase
+using LinearAlgebra, NMF, RandomizedLinAlg, DataStructures, StatsBase
 export solve!, CompressedNMF
 
 include("utils.jl")
@@ -140,21 +140,6 @@ function compmat(A::Matrix{T}, Up, Vp; w=4, rov=10) where T
     L = low_rank_QR(A,r+rov,w=w)
     R = Array(low_rank_QR(A',r+rov,w=w)')
     A_tilde = L'*A*R'
-    # if method == :lowrank
-    #     Up = copy(L); Vp = A_tilde*R
-    # elseif method == :lowrank_nndsvd
-    #     if svdmethod == :isvd
-    #         (U, s) = isvd(A, r); V = Array((pinv(U*Diagonal(s))*A)')
-    #         F = SVD(U,s,V)
-    #     elseif svdmethod == :rsvd
-    #         F = rsvd(A, r)
-    #     else
-    #         F = svd(A)
-    #     end
-    #     Up, Vp = nndsvd(A, r, zeroh=false, variant=:std, initdata=F)
-    # else
-    #     error("Initialization method $(initmethod) is not supported")
-    # end
     balanceUV!(Up,Vp)
     X_tilde, Y_tilde = L'Up, Vp*R'
     # @show norm(A-L*L'A*R'R)^2
@@ -304,22 +289,18 @@ function update_wh!(updater::CompressedNMFUpd{T}, s::CompressedNMFState{T}, A, U
     mul!(Ms[2], s.X_tilde', s.X_tilde); Ms[2][diagind(Ms[2])] .+= phi
     mul!(s.Y_tilde,inv(Ms[2]),Yts[1])
 
-#    @show norm(X_tilde-X_tilde_pre), norm(Y_tilde-Y_tilde_pre)
-
     # Utmp = L*X_tilde+(Lambda-αw*sign.(U))/lambda
     mul!(Us[1],s.L,s.X_tilde)
     sdiv!(Us[2],s.Lambda,lambda)
     madd!(U,Us[1],Us[2])
-#    U[sign.(U).!=Us[3]] .= 0
     # Vtmp = Y_tilde*R+(Phi-αh*sign.(V))/phi
     mul!(Vs[1],s.Y_tilde,s.R)
     sdiv!(Vs[2],s.Phi,phi)
     madd!(V,Vs[1],Vs[2])
 #    V[sign.(V).!=Vs[3]] .= 0
 
-    #mnonneg!(U)
-    #mnonneg!(V)
-#    @show norm(U-U_pre), norm(V-V_pre)
+    mnonneg!(U)
+    mnonneg!(V)
 
     # Lambda .+= xi*lambda*(L*X_tilde-U)
     mul!(Us[1],s.L,s.X_tilde); msub!(Us[1],Us[1],U)
