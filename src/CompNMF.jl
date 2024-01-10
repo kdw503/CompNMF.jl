@@ -73,8 +73,11 @@ struct CompressedNMFUpd{T} <: NMF.NMFUpdater{T}
 end
 
 struct Result{T}
-    U::Matrix{T}
-    V::Matrix{T}
+    L::Matrix{T}
+    R::Matrix{T}
+    A_tilde::Matrix{T}
+    X_tilde::Matrix{T}
+    Y_tilde::Matrix{T}
     niters::Int
     converged::Bool
     objvalue::T
@@ -82,19 +85,21 @@ struct Result{T}
     sparsevalues::Vector{T}
     avgfits::Vector{T}
     inittime::T
-    function Result{T}(U::Matrix{T}, V::Matrix{T}, niters::Int, converged::Bool, objv, objvs, sparsevalues,
-            avgfits, inittime) where T
-        if size(U, 2) != size(V, 1)
-            throw(DimensionMismatch("Inner dimensions of U and V mismatch."))
-        end
-        new{T}(U, V, niters, converged, objv, objvs, sparsevalues, avgfits, inittime)
+    function Result{T}(L::Matrix{T}, R::Matrix{T}, A_tilde::Matrix{T}, X_tilde::Matrix{T}, Y_tilde::Matrix{T},
+            niters::Int, converged::Bool, objv, objvs, sparsevalues, avgfits, inittime) where T
+       new{T}(L, R, A_tilde, X_tilde, Y_tilde, niters, converged, objv, objvs, sparsevalues, avgfits, inittime)
     end
 end
 
-function prepare_state(::CompressedNMFUpd{T}, A, U, V; gtU::Matrix{T}=Matrix{T}(undef,0,0),
+function prepare_state(::CompressedNMFUpd{T}, A, U, V; L=nothing, R=nothing, gtU::Matrix{T}=Matrix{T}(undef,0,0),
         gtV::Matrix{T}=Matrix{T}(undef,0,0)) where T
     time0 = time()
-    L, R, X_tilde, Y_tilde, A_tilde = compmat(A, U, V; w=4)
+    if (L == nothing) || (R == nothing)
+        L, R, X_tilde, Y_tilde, A_tilde = compmat(A, U, V; w=4)
+    else
+        A_tilde = L'*A*R'
+        X_tilde, Y_tilde = L'U, V*R'
+    end
     inittime = time()-time0
     state = CompressedNMFState{T}(X_tilde, Y_tilde, L, R, A_tilde, gtU, gtV)
     state, inittime # U and V are not stored
@@ -140,7 +145,7 @@ function compmat(A::Matrix{T}, Up, Vp; w=4, rov=10) where T
     L = low_rank_QR(A,r+rov,w=w)
     R = Array(low_rank_QR(A',r+rov,w=w)')
     A_tilde = L'*A*R'
-    balanceUV!(Up,Vp)
+    # balanceUV!(Up,Vp)
     X_tilde, Y_tilde = L'Up, Vp*R'
     # @show norm(A-L*L'A*R'R)^2
     L, R, X_tilde, Y_tilde, A_tilde
@@ -159,10 +164,11 @@ function balanceUkVk!(Uk, Vk)
     Uk ./= balfacs; Vk .*= balfacs
 end
 
-solve!(alg::CompressedNMF{T}, A, U, V; gtU::Matrix{T}=Matrix{T}(undef,0,0), gtV::Matrix{T}=Matrix{T}(undef,0,0),
+solve!(alg::CompressedNMF{T}, A, U, V; L=nothing,R=nothing,
+        gtU::Matrix{T}=Matrix{T}(undef,0,0), gtV::Matrix{T}=Matrix{T}(undef,0,0),
         maskU::Union{Colon,Vector,BitVector}=Colon(),maskV::Union{Colon,Vector,BitVector}=Colon()) where {T} =
     nmf_skeleton!(CompressedNMFUpd{T}(alg.xi, alg.lambda, alg.phi, alg.SCA_penmetric, alg.SCA_αw, alg.SCA_αh),
-            A, U, V, alg.maxiter, alg.verbose, alg.tol; gtU=gtU, gtV=gtV, maskU=maskU, maskV=maskV)
+            A, U, V, alg.maxiter, alg.verbose, alg.tol; L=L, R=R, gtU=gtU, gtV=gtV, maskU=maskU, maskV=maskV)
 
 function evaluate_objv(updater::CompressedNMFUpd{T}, s::CompressedNMFState{T}, A, U, V) where T
     # convert(T, 0.5) * sqL2dist(A, s.UV)
@@ -194,11 +200,12 @@ function evaluate_sparseness(updater::CompressedNMFUpd{T}, s::CompressedNMFState
         zero(T)
     end
 end
-function evaluate_fitvalue(updater::CompressedNMFUpd{T}, s::CompressedNMFState{T}, A, U, V) where T
+function evaluate_fitvalue(updater::CompressedNMFUpd{T}, s::CompressedNMFState{T}, A, U, V, maskU, maskV) where T
     if !isempty(s.gtU) && !isempty(s.gtV)
-        avgfit, _ =  matchedfitval(s.gtU, s.gtV, U, V; clamp=false)
+#        U = s.L*s.X_tilde; V = s.Y_tilde*s.R  # this is for U=L*X, V=Y*R output instead of just U, V
+        avgfit, _ =  matchedfitval(s.gtU, s.gtV, U[maskU,:], V[:,maskV]; clamp=false)
     else
-        avgfit = fitd(A,U*V)
+        avgfit = fitd(A[maskU,maskV], U[maskU,:]*V[:,maskV])
     end
     avgfit
 end
@@ -206,6 +213,7 @@ end
 function nmf_skeleton!(updater::NMF.NMFUpdater{T},
                        A, U::Matrix{T}, V::Matrix{T},
                        maxiter::Int, verbose::Bool, tol;
+                       L=nothing, R=nothing,
                        gtU::Matrix{T}=Matrix{T}(undef,0,0),
                        gtV::Matrix{T}=Matrix{T}(undef,0,0),
                        maskU::Union{Colon,Vector,BitVector}=Colon(),
@@ -214,7 +222,7 @@ function nmf_skeleton!(updater::NMF.NMFUpdater{T},
     objv = convert(T, NaN)
     # init
 
-    state, inittime = prepare_state(updater, A, U, V; gtU=gtU[maskU,:], gtV=gtV[maskV,:])
+    state, inittime = prepare_state(updater, A, U, V; L=L, R=R, gtU=gtU[maskU,:], gtV=gtV[maskV,:])
     preU = Matrix{T}(undef, size(U))
     preV = Matrix{T}(undef, size(V))
     objvs = T[]; objvsparses = T[]; avgfits=T[]
@@ -223,7 +231,7 @@ function nmf_skeleton!(updater::NMF.NMFUpdater{T},
         objv = evaluate_objv(updater, state, A, U, V)
         push!(objvs,objv)
         push!(objvsparses,evaluate_sparseness(updater, state, A, U, V))
-        push!(avgfits,evaluate_fitvalue(updater, state, A[maskU,maskV], U[maskU,:], V[:,maskV]))
+        push!(avgfits,evaluate_fitvalue(updater, state, A, U, V, maskU, maskV))
         # @printf("%-5s    %-13s    %-13s    %-13s    %-13s\n", "Iter", "Elapsed time", "objv", "objv.change", "(U & V).change")
         # @printf("%5d    %13.6e    %13.6e\n", 0, 0.0, objv)
     end
@@ -252,7 +260,7 @@ function nmf_skeleton!(updater::NMF.NMFUpdater{T},
             objv = evaluate_objv(updater, state, A, U, V)
             push!(objvs,objv)
             push!(objvsparses,evaluate_sparseness(updater, state, A, U, V))
-            push!(avgfits,evaluate_fitvalue(updater, state, A[maskU,maskV], U[maskU,:], V[:,maskV]))
+            push!(avgfits,evaluate_fitvalue(updater, state, A, U, V, maskU, maskV))
             #@printf("%5d    %13.6e    %13.6e    %13.6e    %13.6e\n",
             #    t, elapsed, objv, objv - preobjv, dev)
         end
@@ -260,16 +268,17 @@ function nmf_skeleton!(updater::NMF.NMFUpdater{T},
     if !verbose
         objv = evaluate_objv(updater, state, A, U, V)
     end
-    return Result{T}(U, V, iter, converged, objv, objvs, objvsparses, avgfits, inittime)
+ #   return Result{T}(U, V, iter, converged, objv, objvs, objvsparses, avgfits, inittime)
+    return Result{T}(state.L, state.R, state.A_tilde, state.X_tilde, state.Y_tilde, iter,
+                    converged, objv, objvs, objvsparses, avgfits, inittime)
 end
 
 function update_wh!(updater::CompressedNMFUpd{T}, s::CompressedNMFState{T}, A, U, V) where T
-    r = size(U,2)
     Us = s.TmpUs; Vs = s.TmpVs; Xts = s.TmpXts; Yts = s.TmpYts; Ms = s.TmpMs
     xi = updater.xi; lambda = updater.lambda; phi = updater.phi
     xilambda = xi*lambda; xiphi = xi*phi
 
-    # X_tilde .= (A_tilde*Y_tilde'+lambda*L'U-L'Lambda)*inv(Y_tilde*Y_tilde'+lambda*I)
+    # s.X_tilde .= (s.A_tilde*s.Y_tilde'+lambda*s.L'U-s.L's.Lambda)*inv(s.Y_tilde*s.Y_tilde'+lambda*Matrix(1.0I,r,r))
     mul!(Xts[1],s.A_tilde,s.Y_tilde')
     mul!(Xts[2],s.L',U); rmul!(Xts[2],lambda)
     madd!(Xts[1],Xts[1],Xts[2])
@@ -281,7 +290,8 @@ function update_wh!(updater::CompressedNMFUpd{T}, s::CompressedNMFState{T}, A, U
         @show Ms[2]
         error(e)
     end
-     # Y_tilde .= inv(X_tilde'X_tilde+phi*I)*(X_tilde'A_tilde+phi*V*R'-Phi*R')
+
+    # s.Y_tilde .= inv(s.X_tilde's.X_tilde+phi*Matrix(1.0I,r,r))*(s.X_tilde's.A_tilde+phi*V*s.R'-s.Phi*s.R')
     mul!(Yts[1],s.X_tilde',s.A_tilde)
     mul!(Yts[2],V,s.R'); rmul!(Yts[2],phi)
     madd!(Yts[1],Yts[1],Yts[2])
@@ -289,25 +299,178 @@ function update_wh!(updater::CompressedNMFUpd{T}, s::CompressedNMFState{T}, A, U
     mul!(Ms[2], s.X_tilde', s.X_tilde); Ms[2][diagind(Ms[2])] .+= phi
     mul!(s.Y_tilde,inv(Ms[2]),Yts[1])
 
-    # Utmp = L*X_tilde+(Lambda-αw*sign.(U))/lambda
+    # U .= s.L*s.X_tilde+s.Lambda/lambda
     mul!(Us[1],s.L,s.X_tilde)
     sdiv!(Us[2],s.Lambda,lambda)
     madd!(U,Us[1],Us[2])
-    # Vtmp = Y_tilde*R+(Phi-αh*sign.(V))/phi
+    # V .= s.Y_tilde*s.R+s.Phi/phi
     mul!(Vs[1],s.Y_tilde,s.R)
     sdiv!(Vs[2],s.Phi,phi)
     madd!(V,Vs[1],Vs[2])
-#    V[sign.(V).!=Vs[3]] .= 0
 
     mnonneg!(U)
     mnonneg!(V)
 
-    # Lambda .+= xi*lambda*(L*X_tilde-U)
-    mul!(Us[1],s.L,s.X_tilde); msub!(Us[1],Us[1],U)
+    # s.Lambda .+= xi*lambda*(s.L*s.X_tilde-U)
+    msub!(Us[1],Us[1],U)
     rmul!(Us[1],xilambda); madd!(s.Lambda,s.Lambda,Us[1])
-    # Phi .+= xi*phi*(Y_tilde*R-V)
-    mul!(Vs[1],s.Y_tilde,s.R); msub!(Vs[1],Vs[1],V)
+    # s.Phi .+= xi*phi*(s.Y_tilde*s.R-V)
+    msub!(Vs[1],Vs[1],V)
     rmul!(Vs[1],xiphi); madd!(s.Phi,s.Phi,Vs[1])
+end
+
+function update_wh_slow!(updater::CompressedNMFUpd{T}, s::CompressedNMFState{T}, A, U, V) where T
+    r = size(U,2)
+    xi = updater.xi; lambda = updater.lambda; phi = updater.phi
+
+    s.X_tilde .= (s.A_tilde*s.Y_tilde'+lambda*s.L'U-s.L's.Lambda)*inv(s.Y_tilde*s.Y_tilde'+lambda*Matrix(1.0I,r,r))
+    s.Y_tilde .= inv(s.X_tilde's.X_tilde+phi*Matrix(1.0I,r,r))*(s.X_tilde's.A_tilde+phi*V*s.R'-s.Phi*s.R')
+
+    U .= s.L*s.X_tilde+s.Lambda/lambda
+    V .= s.Y_tilde*s.R+s.Phi/phi
+
+    mnonneg!(U)
+    mnonneg!(V)
+
+    s.Lambda .+= xi*lambda*(s.L*s.X_tilde-U)
+    s.Phi .+= xi*phi*(s.Y_tilde*s.R-V)
+end
+
+function update_wh_cnmf!(updater::CompressedNMFUpd{T}, s::CompressedNMFState{T}, A, U, V; X=nothing, Y=nothing, ls=0) where T
+    L = s.L
+    R = s.R
+    A = s.A_tilde
+    r = size(U,2)
+    m = size(L,1)
+    n = size(R,2)
+    Y = V*R'
+    Lam = zeros(size(U))
+    Phi = zeros(size(V))
+    l = 1.
+    f = 1.
+    x = 1.
+    Idnty = Matrix(1.0I,r,r)
+    iter = 0
+    while iter < 1000
+        iter += 1
+        X = ((Y*Y' + l*Idnty)\(Y*A' + (l*U' - Lam')*L))'
+        # Y_tilde .= inv(X_tilde'X_tilde+phi*I)*(X_tilde'A_tilde+phi*V*R'-Phi*R')
+        Y = (X'X + f*Idnty)\(X'A + (f*V - Phi .- ls)*R')
+        # Utmp = L*X_tilde+Lambda/lambda
+        LX = L*X
+        U .= LX + Lam/l
+        U[U.<0] .= 0
+        # Vtmp = Y_tilde*R+Phi/phi
+        YR = Y*R
+        V .= YR + Phi/f
+        V[V.<0] .= 0
+        # Lambda .+= xi*lambda*(L*X_tilde-U)
+        # Phi .+= xi*phi*(Y_tilde*R-V)
+        Lam += x*l*(LX - U)
+        Phi += x*f*(YR - V)
+    end
+    s.X_tilde .= X; s.Y_tilde .= Y
+end
+
+function update_wh0!(A, L, R, U, V, r; X=nothing, Y=nothing, max_iter=100, ls=0)
+    Y = V*R'
+    Lam = zeros(size(U))
+    Phi = zeros(size(V))
+    l = 1.
+    f = 1.
+    x = 1.
+    Idnty = Matrix(1.0I,r,r)
+    it = 0
+    while it < max_iter
+        it += 1
+        # X_tilde .= (A_tilde*Y_tilde'+lambda*L'U-L'Lambda)*inv(Y_tilde*Y_tilde'+lambda*I)
+        X = ((Y*Y' + l*Idnty)\(Y*A' + (l*U' - Lam')*L))'
+        # Y_tilde .= inv(X_tilde'X_tilde+phi*I)*(X_tilde'A_tilde+phi*V*R'-Phi*R')
+        Y = (X'X + f*Idnty)\(X'A + (f*V - Phi .- ls)*R')
+        # Utmp = L*X_tilde+Lambda/lambda
+        LX = L*X
+        U = LX + Lam/l
+        U[U.<0] .= 0
+        # Vtmp = Y_tilde*R+Phi/phi
+        YR = Y*R
+        V = YR + Phi/f
+        V[V.<0] .= 0
+        # Lambda .+= xi*lambda*(L*X_tilde-U)
+        # Phi .+= xi*phi*(Y_tilde*R-V)
+        Lam += x*l*(LX - U)
+        Phi += x*f*(YR - V)
+    end
+    return X, Y
+end
+
+"""Implements compressed NMF using an ADMM method as described in
+Tepper and Shapiro, IEEE TSP 2015
+min_{U,V,X,Y} ||A - XY||_F^2 s.t. U = LX >= 0 and V = YR >=0
+"""
+function compressive_nmf_cnmf(A, L, R, r; X=nothing, Y=nothing, max_iter=100, ls=0)
+    m = size(L,1)
+    n = size(R,2)
+    U = rand(m, r)
+    V = rand(r, n)
+    Y = V*R'
+    Lam = zeros(size(U))
+    Phi = zeros(size(V))
+    l = 1.
+    f = 1.
+    x = 1.
+    Idnty = Matrix(1.0I,r,r)
+    it = 0
+    while it < max_iter
+        it += 1
+        # X_tilde .= (A_tilde*Y_tilde'+lambda*L'U-L'Lambda)*inv(Y_tilde*Y_tilde'+lambda*I)
+        X = ((Y*Y' + l*Idnty)\(Y*A' + (l*U' - Lam')*L))'
+        # Y_tilde .= inv(X_tilde'X_tilde+phi*I)*(X_tilde'A_tilde+phi*V*R'-Phi*R')
+        Y = (X'X + f*Idnty)\(X'A + (f*V - Phi .- ls)*R')
+        # Utmp = L*X_tilde+Lambda/lambda
+        LX = L*X
+        U = LX + Lam/l
+        U[U.<0] .= 0
+        # Vtmp = Y_tilde*R+Phi/phi
+        YR = Y*R
+        V = YR + Phi/f
+        V[V.<0] .= 0
+        # Lambda .+= xi*lambda*(L*X_tilde-U)
+        # Phi .+= xi*phi*(Y_tilde*R-V)
+        Lam += x*l*(LX - U)
+        Phi += x*f*(YR - V)
+    end
+    return X, Y
+end
+
+function compressive_nmf(A, L, R, U, V, r; X=nothing, Y=nothing, max_iter=100, ls=0)
+    Y = V*R'
+    Lam = zeros(size(U))
+    Phi = zeros(size(V))
+    l = 1.
+    f = 1.
+    x = 1.
+    Idnty = Matrix(1.0I,r,r)
+    it = 0
+    while it < max_iter
+        it += 1
+        # X_tilde .= (A_tilde*Y_tilde'+lambda*L'U-L'Lambda)*inv(Y_tilde*Y_tilde'+lambda*I)
+        X = ((Y*Y' + l*Idnty)\(Y*A' + (l*U' - Lam')*L))'
+        # Y_tilde .= inv(X_tilde'X_tilde+phi*I)*(X_tilde'A_tilde+phi*V*R'-Phi*R')
+        Y = (X'X + f*Idnty)\(X'A + (f*V - Phi .- ls)*R')
+        # Utmp = L*X_tilde+Lambda/lambda
+        LX = L*X
+        U = LX + Lam/l
+        U[U.<0] .= 0
+        # Vtmp = Y_tilde*R+Phi/phi
+        YR = Y*R
+        V = YR + Phi/f
+        V[V.<0] .= 0
+        # Lambda .+= xi*lambda*(L*X_tilde-U)
+        # Phi .+= xi*phi*(Y_tilde*R-V)
+        Lam += x*l*(LX - U)
+        Phi += x*f*(YR - V)
+    end
+    return X, Y
 end
 
 end
