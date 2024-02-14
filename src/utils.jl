@@ -1,13 +1,13 @@
-function normalizeW!(W,H)
-    p = size(W,2)
+function normalizeU!(U,V)
+    p = size(U,2)
     for i = 1:p
-        nrm = max(eps(eltype(W)),norm(W[:,i]))
+        nrm = max(eps(eltype(U)),norm(U[:,i]))
         if nrm != 0.
-            W[:,i] ./= nrm
-            H[i,:] .*= nrm
+            U[:,i] ./= nrm
+            V[i,:] .*= nrm
         end
     end
-    W,H
+    U,V
 end
 
 fitx(a,b) = (m=sum(a)/length(a); denom=sum(abs2,a.-m); fitx(a,b,denom))
