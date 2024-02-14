@@ -19,9 +19,9 @@ mutable struct CompressedNMF{T}
     function CompressedNMF{T}(;maxiter::Integer=100,
                               verbose::Bool=false,
                               tol::Real=cbrt(eps(T)),
-                              xi::T=1.0,
-                              lambda::T=1.0,
-                              phi::T=1.0,
+                              xi::Real=1.0,
+                              lambda::Real=1.0,
+                              phi::Real=1.0,
                               SCA_penmetric::Symbol=:CompNMF,
                               SCA_αw::Real=100,
                               SCA_αh::Real=100) where T
