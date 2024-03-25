@@ -1,7 +1,7 @@
 module CompNMF
 
 using LinearAlgebra, NMF, RandomizedLinAlg, DataStructures, StatsBase
-export solve!, CompressedNMF
+export solve!, CompressedNMF, compmat
 
 include("utils.jl")
 
@@ -94,7 +94,7 @@ end
 function prepare_state(::CompressedNMFUpd{T}, A, U, V; L=nothing, R=nothing, gtU::Matrix{T}=Matrix{T}(undef,0,0),
         gtV::Matrix{T}=Matrix{T}(undef,0,0)) where T
     time0 = time()
-    if (L == nothing) || (R == nothing)
+    if (L === nothing) || (R === nothing)
         L, R, X_tilde, Y_tilde, A_tilde = compmat(A, U, V; w=4)
     else
         A_tilde = L'*A*R'
@@ -140,7 +140,7 @@ function low_rank_QR(A::AbstractArray{T,2}, rrov; w=4) where T<:Real
     Matrix(Q)
 end
 
-function compmat(A::Matrix{T}, Up, Vp; w=4, rov=10) where T
+function compmat(A::AbstractArray{T,2}, Up, Vp; w=4, rov=10) where T
     r = size(Up,2)
     L = low_rank_QR(A,r+rov,w=w)
     R = Array(low_rank_QR(A',r+rov,w=w)')
