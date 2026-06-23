@@ -222,7 +222,7 @@ function nmf_skeleton!(updater::NMF.NMFUpdater{T},
     objv = convert(T, NaN)
     # init
 
-    state, inittime = prepare_state(updater, A, U, V; L=L, R=R, gtU=gtU[maskU,:], gtV=gtV[maskV,:])
+    state, inittime = prepare_state(updater, A, U, V; L=L, R=R, gtU=gtU[maskU,:], gtV=gtV[:,maskV])
     preU = Matrix{T}(undef, size(U))
     preV = Matrix{T}(undef, size(V))
     objvs = T[]; objvsparses = T[]; avgfits=T[]
