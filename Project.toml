@@ -4,13 +4,13 @@ authors = ["Dae Woo Kim"]
 version = "1.0.0-DEV"
 
 [deps]
+AverageFits = "8152fc2f-4325-4aff-9677-d6bdbc64f16e"
 DataStructures = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
 ISVD = "0de75c66-c0d4-11e8-3de9-d1632eed9267"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 NMF = "6ef6ca0d-6ad7-5ff6-b225-e928bfa0a386"
 RandomizedLinAlg = "0448d7d9-159c-5637-8537-fd72090fea46"
 StatsBase = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
-TestData = "72c4b22c-bbb9-4377-8daa-6a9d06489e17"
 
 [compat]
 julia = "1"

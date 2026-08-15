@@ -1,7 +1,7 @@
 module CompNMF
 
 using LinearAlgebra, NMF, RandomizedLinAlg, DataStructures, StatsBase
-using TestData
+using AverageFits
 export solve!, CompressedNMF, compmat
 
 mutable struct CompressedNMF{T}
@@ -81,10 +81,11 @@ struct Result{T}
     objvalues::Vector{T}
     sparsevalues::Vector{T}
     avgfits::Vector{T}
+    wavgfits::Vector{T}
     inittime::T
     function Result{T}(L::Matrix{T}, R::Matrix{T}, A_tilde::Matrix{T}, X_tilde::Matrix{T}, Y_tilde::Matrix{T},
-            niters::Int, converged::Bool, objv, objvs, sparsevalues, avgfits, inittime) where T
-       new{T}(L, R, A_tilde, X_tilde, Y_tilde, niters, converged, objv, objvs, sparsevalues, avgfits, inittime)
+            niters::Int, converged::Bool, objv, objvs, sparsevalues, avgfits, wavgfits, inittime) where T
+       new{T}(L, R, A_tilde, X_tilde, Y_tilde, niters, converged, objv, objvs, sparsevalues, avgfits, wavgfits, inittime)
     end
 end
 
@@ -215,13 +216,14 @@ function nmf_skeleton!(updater::NMF.NMFUpdater{T},
     state, inittime = prepare_state(updater, A, U, Vt; L=L, R=R)
     preU = Matrix{T}(undef, size(U))
     preVt = Matrix{T}(undef, size(Vt))
-    objvs = T[]; objvsparses = T[]; avgfits=T[]
+    objvs = T[]; objvsparses = T[]; avgfits=T[]; wavgfits=T[]
     if verbose
         start = time()
         objv = evaluate_objv(updater, state, A, U, Vt)
         push!(objvs,objv)
         push!(objvsparses,evaluate_sparseness(updater, state, A, U, Vt))
-        push!(avgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; delta_f=delta_f, weighted=weighted)[1])
+        push!(avgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; delta_f=delta_f, weighted=false)[1])
+        push!(wavgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; delta_f=delta_f, weighted=true)[1])
         # @printf("%-5s    %-13s    %-13s    %-13s    %-13s\n", "Iter", "Elapsed time", "objv", "objv.change", "(U & Vt).change")
         # @printf("%5d    %13.6e    %13.6e\n", 0, 0.0, objv)
     end
@@ -250,7 +252,8 @@ function nmf_skeleton!(updater::NMF.NMFUpdater{T},
             objv = evaluate_objv(updater, state, A, U, Vt)
             push!(objvs,objv)
             push!(objvsparses,evaluate_sparseness(updater, state, A, U, Vt))
-            push!(avgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; delta_f=delta_f, weighted=weighted)[1])
+            push!(avgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; delta_f=delta_f, weighted=false)[1])
+            push!(wavgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; delta_f=delta_f, weighted=true)[1])
             #@printf("%5d    %13.6e    %13.6e    %13.6e    %13.6e\n",
             #    t, elapsed, objv, objv - preobjv, dev)
         end
@@ -260,7 +263,7 @@ function nmf_skeleton!(updater::NMF.NMFUpdater{T},
     end
  #   return Result{T}(U, Vt, iter, converged, objv, objvs, objvsparses, avgfits, inittime)
     return Result{T}(state.L, state.R, state.A_tilde, state.X_tilde, state.Y_tilde, iter,
-                    converged, objv, objvs, objvsparses, avgfits, inittime)
+                    converged, objv, objvs, objvsparses, avgfits, wavgfits, inittime)
 end
 
 function update_wh!(updater::CompressedNMFUpd{T}, s::CompressedNMFState{T}, A, U, Vt) where T
