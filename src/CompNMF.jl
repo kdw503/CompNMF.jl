@@ -82,10 +82,13 @@ struct Result{T}
     sparsevalues::Vector{T}
     avgfits::Vector{T}
     wavgfits::Vector{T}
+    corrs::Vector{T}    # left-factor (U) matched ground-truth correlation (AverageFits.wh_correlations); == wcorrs
+    wcorrs::Vector{T}   # left  (U)  factor matched ground-truth correlation
+    hcorrs::Vector{T}   # right (Vt) factor matched ground-truth correlation, on the SAME matching as the left
     inittime::T
     function Result{T}(L::Matrix{T}, R::Matrix{T}, A_tilde::Matrix{T}, X_tilde::Matrix{T}, Y_tilde::Matrix{T},
-            niters::Int, converged::Bool, objv, objvs, sparsevalues, avgfits, wavgfits, inittime) where T
-       new{T}(L, R, A_tilde, X_tilde, Y_tilde, niters, converged, objv, objvs, sparsevalues, avgfits, wavgfits, inittime)
+            niters::Int, converged::Bool, objv, objvs, sparsevalues, avgfits, wavgfits, corrs, wcorrs, hcorrs, inittime) where T
+       new{T}(L, R, A_tilde, X_tilde, Y_tilde, niters, converged, objv, objvs, sparsevalues, avgfits, wavgfits, corrs, wcorrs, hcorrs, inittime)
     end
 end
 
@@ -164,10 +167,10 @@ end
 solve!(alg::CompressedNMF{T}, A, U, Vt; L=nothing,R=nothing,
         gtU::Matrix{T}=Matrix{T}(undef,0,0), gtVt::Matrix{T}=Matrix{T}(undef,0,0),
         maskU::Union{Colon,Vector,BitVector}=Colon(),maskVt::Union{Colon,Vector,BitVector}=Colon(),
-        delta_f=false, weighted=true) where {T} =
+        corr_primary::Symbol=:WH, sub_base_q=0.01, delta_f=false, weighted=true) where {T} =
     nmf_skeleton!(CompressedNMFUpd{T}(alg.xi, alg.lambda, alg.phi, alg.SCA_penmetric, alg.SCA_αw, alg.SCA_αh),
             A, U, Vt, alg.maxiter, alg.verbose, alg.tol; L=L, R=R, gtU=gtU, gtVt=gtVt, maskU=maskU, maskVt=maskVt,
-            delta_f=delta_f, weighted=weighted)
+            corr_primary=corr_primary, sub_base_q=sub_base_q, delta_f=delta_f, weighted=weighted)
 
 function evaluate_objv(updater::CompressedNMFUpd{T}, s::CompressedNMFState{T}, A, U, Vt) where T
     # convert(T, 0.5) * sqL2dist(A, s.UVt)
@@ -208,7 +211,8 @@ function nmf_skeleton!(updater::NMF.NMFUpdater{T},
                        gtVt::Matrix{T}=Matrix{T}(undef,0,0),
                        maskU::Union{Colon,Vector,BitVector}=Colon(),
                        maskVt::Union{Colon,Vector,BitVector}=Colon(),
-                       delta_f=false, weighted=true
+                       corr_primary::Symbol=:WH,
+                       sub_base_q=0.01, delta_f=false, weighted=true
                        ) where T
     objv = convert(T, NaN)
     # init
@@ -216,14 +220,22 @@ function nmf_skeleton!(updater::NMF.NMFUpdater{T},
     state, inittime = prepare_state(updater, A, U, Vt; L=L, R=R)
     preU = Matrix{T}(undef, size(U))
     preVt = Matrix{T}(undef, size(Vt))
-    objvs = T[]; objvsparses = T[]; avgfits=T[]; wavgfits=T[]
+    objvs = T[]; objvsparses = T[]; avgfits=T[]; wavgfits=T[]; corrs=T[]; wcorrs=T[]; hcorrs=T[]
+    gtVtt = permutedims(gtVt)   # right-factor GT (n x K), computed once for the loop
+    # Both-factor matched ground-truth correlation on ONE shared matching, via
+    # AverageFits.wh_correlations: `corr_primary` (:W / :H) picks which factor is matched
+    # first (U = left / Vt = right); the other reuses that assignment (Vt' ==
+    # permutedims(Vt)) so both R values describe the same gt<->component pairing.
+    # CompNMF is non-negative → no sign-flip.
+    wh_corr(U, Vt) = wh_correlations(gtU, gtVtt, U, permutedims(Vt); maskW = maskU, maskH = maskVt, primary = corr_primary)
     if verbose
         start = time()
         objv = evaluate_objv(updater, state, A, U, Vt)
         push!(objvs,objv)
         push!(objvsparses,evaluate_sparseness(updater, state, A, U, Vt))
-        push!(avgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; delta_f=delta_f, weighted=false)[1])
-        push!(wavgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; delta_f=delta_f, weighted=true)[1])
+        push!(avgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; sub_base_q=sub_base_q, delta_f=delta_f, weighted=false)[1])
+        push!(wavgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; sub_base_q=sub_base_q, delta_f=delta_f, weighted=true)[1])
+        wc, hc = wh_corr(U, Vt); push!(corrs, wc); push!(wcorrs, wc); push!(hcorrs, hc)
         # @printf("%-5s    %-13s    %-13s    %-13s    %-13s\n", "Iter", "Elapsed time", "objv", "objv.change", "(U & Vt).change")
         # @printf("%5d    %13.6e    %13.6e\n", 0, 0.0, objv)
     end
@@ -252,8 +264,9 @@ function nmf_skeleton!(updater::NMF.NMFUpdater{T},
             objv = evaluate_objv(updater, state, A, U, Vt)
             push!(objvs,objv)
             push!(objvsparses,evaluate_sparseness(updater, state, A, U, Vt))
-            push!(avgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; delta_f=delta_f, weighted=false)[1])
-            push!(wavgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; delta_f=delta_f, weighted=true)[1])
+            push!(avgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; sub_base_q=sub_base_q, delta_f=delta_f, weighted=false)[1])
+            push!(wavgfits, evaluate_fitvalue(gtU, gtVt, A, U, Vt, maskU, maskVt; sub_base_q=sub_base_q, delta_f=delta_f, weighted=true)[1])
+            wc, hc = wh_corr(U, Vt); push!(corrs, wc); push!(wcorrs, wc); push!(hcorrs, hc)
             #@printf("%5d    %13.6e    %13.6e    %13.6e    %13.6e\n",
             #    t, elapsed, objv, objv - preobjv, dev)
         end
@@ -263,7 +276,7 @@ function nmf_skeleton!(updater::NMF.NMFUpdater{T},
     end
  #   return Result{T}(U, Vt, iter, converged, objv, objvs, objvsparses, avgfits, inittime)
     return Result{T}(state.L, state.R, state.A_tilde, state.X_tilde, state.Y_tilde, iter,
-                    converged, objv, objvs, objvsparses, avgfits, wavgfits, inittime)
+                    converged, objv, objvs, objvsparses, avgfits, wavgfits, corrs, wcorrs, hcorrs, inittime)
 end
 
 function update_wh!(updater::CompressedNMFUpd{T}, s::CompressedNMFState{T}, A, U, Vt) where T
